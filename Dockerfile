@@ -1,22 +1,31 @@
 # Base image for building
-ARG LITELLM_BUILD_IMAGE=cgr.dev/chainguard/python:latest-dev
+ARG LITELLM_BUILD_IMAGE=python:3.13.1-slim
 
 # Runtime image
-ARG LITELLM_RUNTIME_IMAGE=cgr.dev/chainguard/python:latest-dev
+ARG LITELLM_RUNTIME_IMAGE=python:3.13.1-slim
 # Builder stage
 FROM $LITELLM_BUILD_IMAGE AS builder
 
 # Set the working directory to /app
 WORKDIR /app
 
-USER root
+# Set the shell to bash
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Install build dependencies
-RUN apk add --no-cache gcc python3-dev openssl openssl-dev
+RUN apt-get clean && apt-get update && \
+    apt-get install -y gcc g++ python3-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN pip config set global.index-url "https://nexus-u.oss.cse-cst.gc.ca/repository/pypi/simple" && \
+pip config set global.extra-index-url "https://nexus-u.oss.cse-cst.gc.ca/repository/pypi-cfx/simple https://nexus-u.oss.cse-cst.gc.ca/repository/pypi-cinema-payloads/simple" && \
+pip config set global.trusted-host "nexus-u.oss.cse-cst.gc.ca" && \
+pip3 config set global.timeout 300
 
 
-RUN pip install --upgrade pip && \
-    pip install build
+
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir build
 
 # Copy the current directory contents into the container at /app
 COPY . .
@@ -36,22 +45,17 @@ RUN pip install dist/*.whl
 # install dependencies as wheels
 RUN pip wheel --no-cache-dir --wheel-dir=/wheels/ -r requirements.txt
 
-# ensure pyjwt is used, not jwt
-RUN pip uninstall jwt -y
-RUN pip uninstall PyJWT -y
-RUN pip install PyJWT==2.9.0 --no-cache-dir
-
-# Build Admin UI
-RUN chmod +x docker/build_admin_ui.sh && ./docker/build_admin_ui.sh
-
 # Runtime stage
 FROM $LITELLM_RUNTIME_IMAGE AS runtime
 
-# Ensure runtime stage runs as root
-USER root
+RUN pip config set global.index-url "https://nexus-u.oss.cse-cst.gc.ca/repository/pypi/simple" && \
+pip config set global.extra-index-url "https://nexus-u.oss.cse-cst.gc.ca/repository/pypi-cfx/simple https://nexus-u.oss.cse-cst.gc.ca/repository/pypi-cinema-payloads/simple" && \
+pip config set global.trusted-host "nexus-u.oss.cse-cst.gc.ca" && \
+pip3 config set global.timeout 300
 
-# Install runtime dependencies
-RUN apk add --no-cache openssl
+
+# Update dependencies and clean up - handles debian security issue
+RUN apt-get update && apt-get upgrade -y 
 
 WORKDIR /app
 # Copy the current directory contents into the container at /app
@@ -61,18 +65,50 @@ RUN ls -la /app
 # Copy the built wheel from the builder stage to the runtime stage; assumes only one wheel file is present
 COPY --from=builder /app/dist/*.whl .
 COPY --from=builder /wheels/ /wheels/
-
 # Install the built wheel using pip; again using a wildcard if it's the only file
 RUN pip install *.whl /wheels/* --no-index --find-links=/wheels/ && rm -f *.whl && rm -rf /wheels
 
-# Generate prisma client
-RUN prisma generate
+# ensure pyjwt is used, not jwt
+RUN pip uninstall jwt -y && \
+    pip uninstall PyJWT -y && \
+    pip install PyJWT==2.9.0 --no-cache-dir
+
+# Build Admin UI
+RUN chmod +x docker/build_admin_ui.sh && ./docker/build_admin_ui.sh
+
+### Prisma Handling for Non-Root #################################################
+# Prisma allows you to specify the binary cache directory to use
+ENV PRISMA_BINARY_CACHE_DIR=/nonexistent
+
+RUN pip install --no-cache-dir nodejs-bin prisma
+
+# Make a /non-existent folder and assign chown to nobody
+RUN mkdir -p /nonexistent && \
+    chown -R nobody:nogroup /app && \
+    chown -R nobody:nogroup /nonexistent && \
+    chown -R nobody:nogroup /usr/local/lib/python3.13/site-packages/prisma/
+
 RUN chmod +x docker/entrypoint.sh
 RUN chmod +x docker/prod_entrypoint.sh
 
+# Run Prisma generate as user = nobody
+USER nobody
+
+# TODO FIX!!!!!!!
+ENV NODE_TLS_REJECT_UNAUTHORIZED=0
+RUN /usr/local/lib/python3.13/site-packages/nodejs/bin/node /usr/local/lib/python3.13/site-packages/nodejs/lib/node_modules/npm/bin/npm-cli.js config set strict-ssl false
+RUN /usr/local/lib/python3.13/site-packages/nodejs/bin/node /usr/local/lib/python3.13/site-packages/nodejs/lib/node_modules/npm/bin/npm-cli.js config set registry "https://nexus-u.oss.cse-cst.gc.ca/repository/cinema-npm/"
+
+RUN prisma generate 
+
+RUN chmod -R 777  /usr/local/lib/python3.13/site-packages/prisma/
+### End of Prisma Handling for Non-Root #########################################
+
 EXPOSE 4000/tcp
 
+# # Set your entrypoint and command
 ENTRYPOINT ["docker/prod_entrypoint.sh"]
 
-# Append "--detailed_debug" to the end of CMD to view detailed debug logs 
+# Append "--detailed_debug" to the end of CMD to view detailed debug logs
+# CMD ["--port", "4000", "--detailed_debug"]
 CMD ["--port", "4000"]

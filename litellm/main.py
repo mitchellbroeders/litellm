@@ -3608,6 +3608,11 @@ def embedding(  # noqa: PLR0915
                 aembedding=aembedding,
             )
         elif custom_llm_provider == "cohere" or custom_llm_provider == "cohere_chat":
+
+            api_base = (
+                api_base or litellm.api_base or get_secret_str("COHERE_API_BASE")
+            )
+                        
             cohere_key = (
                 api_key
                 or litellm.cohere_key
@@ -3627,6 +3632,7 @@ def embedding(  # noqa: PLR0915
                 encoding=encoding,
                 api_key=cohere_key,  # type: ignore
                 headers=headers,
+                complete_api_base=api_base,
                 logging_obj=logging,
                 model_response=EmbeddingResponse(),
                 aembedding=aembedding,

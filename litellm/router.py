@@ -2121,6 +2121,17 @@ class Router:
                 deployment=deployment,
                 kwargs=kwargs,
             )
+
+            try:
+                if not "headers" in kwargs:
+                    kwargs["headers"] = {}
+                kwargs["headers"]["x-upstream-url"] = data["extra_headers"]["x-upstream-url"]
+            except Exception as e:
+                verbose_router_logger.warning(f"Failed to add x-upstream-url header Exception {str(e)}")
+
+                
+
+
             self.total_calls[model_name] += 1
 
             response = await litellm.arerank(
